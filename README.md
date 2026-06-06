@@ -29,6 +29,12 @@ cc-statusline on main
 [Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀ 87%
 ```
 
+🟣 Magenta zone（101%+、compaction 超過）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿ 101%
+```
+
 worktree 内（`.claude/worktrees/<name>/`）:
 
 ```
@@ -37,7 +43,7 @@ dotfiles > feat-my-feature on worktree-feat-my-feature*
 ```
 
 - Line 1: ディレクトリ（worktree 時は `repo > wt_name`）/ git ブランチ / dirty マーク `*`
-- Line 2: モデル名 / effort │ Context バー │ 5h 使用率 │ 7d 使用率
+- Line 2: `[モデル名 | effort]` │ Context バー │ 5h 使用率 │ 7d 使用率
 
 ## なぜ作ったか
 
@@ -96,4 +102,5 @@ export STATUSLINE_RS_BIN="$HOME/Projects/cc-statusline/target/release/statusline
 | 0–40% | 🟢 Green | Smart zone（フル性能） |
 | 41–60% | 🟡 Yellow | Dumb zone（品質低下開始） |
 | 61–80% | 🟠 Orange | Danger zone |
-| 81%+ | 🔴 Red | Near compaction |
+| 81–100% | 🔴 Red | Near compaction |
+| 101%+ | 🟣 Magenta | Compaction 超過 |
