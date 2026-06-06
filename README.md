@@ -32,7 +32,7 @@ cc-statusline on main
 worktree 内（`.claude/worktrees/<name>/`）:
 
 ```
-dotfiles > feat-my-feature on feat-my-feature*
+dotfiles > feat-my-feature on worktree-feat-my-feature*
 [Sonnet 4.6 | medium] │ Context ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 20%
 ```
 
