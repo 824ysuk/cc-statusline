@@ -422,6 +422,21 @@ mod tests {
         assert_eq!(context_pct(&ctx), 0);
     }
 
+    #[test]
+    fn test_context_pct_used_percentage_zero_falls_through_to_token() {
+        // used_percentage = 0.0 は「値なし」として扱い token fallback へ落ちる
+        let ctx = ContextWindow {
+            context_window_size: Some(200_000),
+            used_percentage: Some(0.0),
+            current_usage: Some(CurrentUsage {
+                input_tokens: Some(50_000),
+                cache_creation_input_tokens: Some(0),
+                cache_read_input_tokens: Some(0),
+            }),
+        };
+        assert_eq!(context_pct(&ctx), 25);
+    }
+
     // ── render_bar ────────────────────────────────────────────────────────────
 
     #[test]
@@ -444,6 +459,23 @@ mod tests {
         let full: String = std::iter::repeat('⣿').take(5).collect();
         let empty: String = std::iter::repeat('⡀').take(5).collect();
         assert_eq!(bar, format!("{full}{empty}"));
+    }
+
+    #[test]
+    fn test_render_bar_partial_low() {
+        // 25% → filled_eighths=20, full=2, partial=4 (⣤), empty=7
+        let bar = strip_ansi(&render_bar(25, 10, ""));
+        let full: String = std::iter::repeat('⣿').take(2).collect();
+        let empty: String = std::iter::repeat('⡀').take(7).collect();
+        assert_eq!(bar, format!("{full}⣤{empty}"));
+    }
+
+    #[test]
+    fn test_render_bar_partial_high() {
+        // 87% → filled_eighths=69, full=8, partial=5 (⣦), empty=1
+        let bar = strip_ansi(&render_bar(87, 10, ""));
+        let full: String = std::iter::repeat('⣿').take(8).collect();
+        assert_eq!(bar, format!("{full}⣦⡀"));
     }
 
     // ── format_reset ──────────────────────────────────────────────────────────
