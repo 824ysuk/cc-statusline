@@ -150,13 +150,23 @@ fn git_info(cwd: &str) -> Option<GitInfo> {
         .output()
         .ok()?;
 
-    if !branch_out.status.success() {
-        return None;
-    }
-    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
-    if branch.is_empty() {
-        return None;
-    }
+    let branch = if branch_out.status.success() {
+        let b = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+        if b.is_empty() {
+            return None;
+        }
+        b
+    } else {
+        // detached HEAD: fall back to short SHA
+        let rev_out = Command::new("git")
+            .args(["-C", cwd, "rev-parse", "--short", "HEAD"])
+            .output()
+            .ok()?;
+        if !rev_out.status.success() {
+            return None;
+        }
+        format!("*({})", String::from_utf8_lossy(&rev_out.stdout).trim())
+    };
 
     let dirty_out = Command::new("git")
         .args(["-C", cwd, "status", "--porcelain"])
