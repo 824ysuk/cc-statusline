@@ -70,7 +70,10 @@ struct RateLimit {
 
 fn read_stdin() -> String {
     let mut buf = String::new();
-    io::stdin().read_to_string(&mut buf).unwrap_or_default();
+    if let Err(e) = io::stdin().read_to_string(&mut buf) {
+        eprintln!("statusline-rs: stdin read error: {e}");
+        std::process::exit(1);
+    }
     buf
 }
 
@@ -523,7 +526,11 @@ mod tests {
 
 fn main() {
     let raw = read_stdin();
-    let stdin: StdinData = serde_json::from_str(&raw).unwrap_or_default();
+    let stdin: StdinData = serde_json::from_str(&raw).unwrap_or_else(|e| {
+        eprintln!("statusline-rs: JSON parse error: {e}");
+        eprintln!("input: {raw}");
+        std::process::exit(1);
+    });
 
     // Line 1: directory + git branch
     if let Some(line) = render_dir_line(&stdin) {
