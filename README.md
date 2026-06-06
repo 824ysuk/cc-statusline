@@ -43,7 +43,7 @@ dotfiles > feat-my-feature on worktree-feat-my-feature*
 ```
 
 - Line 1: ディレクトリ（worktree 時は `repo > wt_name`）/ git ブランチ / dirty マーク `*`
-- Line 2: モデル名 / effort │ Context バー │ 5h 使用率 │ 7d 使用率
+- Line 2: `[モデル名 | effort]` │ Context バー │ 5h 使用率 │ 7d 使用率
 
 ## なぜ作ったか
 
