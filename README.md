@@ -52,13 +52,33 @@ dotfiles > feat-my-feature on worktree-feat-my-feature*
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # ビルド
-bash ~/dotfiles/statusline-rs/build.sh
+git clone https://github.com/824ysuk/cc-statusline
+cd cc-statusline
+bash build.sh
 ```
 
 ## セットアップ
 
-ビルド後、`statusline-with-pr.sh` が自動的にこのバイナリを検出して使います。
-バイナリが存在しない場合はステータスラインが表示されません。必ずビルドを実行してください。
+ビルド後、Claude Code の `StatusLine` フックとして登録します。`.claude/settings.json` に追加してください:
+
+```json
+{
+  "hooks": {
+    "StatusLine": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/cc-statusline/target/release/statusline-rs"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+バイナリは Claude Code から JSON を stdin で受け取り、ステータスライン文字列を stdout に出力します。
 
 ## context カラーゾーン（claudeline 準拠）
 
