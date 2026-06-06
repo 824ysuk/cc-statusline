@@ -76,9 +76,13 @@ fn read_stdin() -> String {
 
 /// 末尾 N 階層のディレクトリ名を返す（pathLevels 相当）
 fn dir_name(cwd: &str, levels: usize) -> String {
-    // ~ 展開
-    let expanded = if let Ok(home) = std::env::var("HOME") {
-        cwd.replacen(&home as &str, "~", 1)
+    let home = std::env::var("HOME").ok();
+    dir_name_impl(cwd, levels, home.as_deref())
+}
+
+fn dir_name_impl(cwd: &str, levels: usize, home: Option<&str>) -> String {
+    let expanded = if let Some(h) = home {
+        cwd.replacen(h, "~", 1)
     } else {
         cwd.to_string()
     };
@@ -235,7 +239,11 @@ fn format_reset(resets_at: f64) -> String {
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
         .as_secs_f64();
-    let secs = (resets_at - now).max(0.0) as u64;
+    format_reset_impl(resets_at, now)
+}
+
+fn format_reset_impl(resets_at: f64, now_secs: f64) -> String {
+    let secs = (resets_at - now_secs).max(0.0) as u64;
     let d = secs / 86400;
     let h = (secs % 86400) / 3600;
     let m = (secs % 3600) / 60;
@@ -332,6 +340,183 @@ fn render_identity_line(stdin: &StdinData) -> String {
 
     let sep = format!(" {DIM}│{RESET} ");
     parts.join(&sep)
+}
+
+// ── tests ─────────────────────────────────────────────────────────────────────
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use serde_json::json;
+
+    fn strip_ansi(s: &str) -> String {
+        let mut result = String::new();
+        let mut chars = s.chars().peekable();
+        while let Some(c) = chars.next() {
+            if c == '\x1b' {
+                for ch in chars.by_ref() {
+                    if ch == 'm' {
+                        break;
+                    }
+                }
+            } else {
+                result.push(c);
+            }
+        }
+        result
+    }
+
+    // ── dir_name ──────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dir_name_home_substitution() {
+        let result = dir_name_impl("/Users/foo/Projects/cc-statusline", 1, Some("/Users/foo"));
+        assert_eq!(result, "cc-statusline");
+    }
+
+    #[test]
+    fn test_dir_name_last_level() {
+        let result = dir_name_impl("/Users/foo/bar/baz", 1, None);
+        assert_eq!(result, "baz");
+    }
+
+    #[test]
+    fn test_dir_name_root() {
+        let result = dir_name_impl("/", 1, None);
+        assert_eq!(result, "/");
+    }
+
+    // ── context_pct ───────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_context_pct_used_percentage_direct() {
+        let ctx = ContextWindow {
+            context_window_size: None,
+            used_percentage: Some(26.0),
+            current_usage: None,
+        };
+        assert_eq!(context_pct(&ctx), 26);
+    }
+
+    #[test]
+    fn test_context_pct_token_fallback() {
+        let ctx = ContextWindow {
+            context_window_size: Some(200_000),
+            used_percentage: None,
+            current_usage: Some(CurrentUsage {
+                input_tokens: Some(50_000),
+                cache_creation_input_tokens: Some(0),
+                cache_read_input_tokens: Some(0),
+            }),
+        };
+        assert_eq!(context_pct(&ctx), 25);
+    }
+
+    #[test]
+    fn test_context_pct_both_none() {
+        let ctx = ContextWindow {
+            context_window_size: None,
+            used_percentage: None,
+            current_usage: None,
+        };
+        assert_eq!(context_pct(&ctx), 0);
+    }
+
+    #[test]
+    fn test_context_pct_used_percentage_zero_falls_through_to_token() {
+        // used_percentage = 0.0 は「値なし」として扱い token fallback へ落ちる
+        let ctx = ContextWindow {
+            context_window_size: Some(200_000),
+            used_percentage: Some(0.0),
+            current_usage: Some(CurrentUsage {
+                input_tokens: Some(50_000),
+                cache_creation_input_tokens: Some(0),
+                cache_read_input_tokens: Some(0),
+            }),
+        };
+        assert_eq!(context_pct(&ctx), 25);
+    }
+
+    // ── render_bar ────────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_bar_zero() {
+        let bar = strip_ansi(&render_bar(0, 10, ""));
+        let expected: String = std::iter::repeat('⡀').take(10).collect();
+        assert_eq!(bar, expected);
+    }
+
+    #[test]
+    fn test_render_bar_full() {
+        let bar = strip_ansi(&render_bar(100, 10, ""));
+        let expected: String = std::iter::repeat('⣿').take(10).collect();
+        assert_eq!(bar, expected);
+    }
+
+    #[test]
+    fn test_render_bar_half() {
+        let bar = strip_ansi(&render_bar(50, 10, ""));
+        let full: String = std::iter::repeat('⣿').take(5).collect();
+        let empty: String = std::iter::repeat('⡀').take(5).collect();
+        assert_eq!(bar, format!("{full}{empty}"));
+    }
+
+    #[test]
+    fn test_render_bar_partial_low() {
+        // 25% → filled_eighths=20, full=2, partial=4 (⣤), empty=7
+        let bar = strip_ansi(&render_bar(25, 10, ""));
+        let full: String = std::iter::repeat('⣿').take(2).collect();
+        let empty: String = std::iter::repeat('⡀').take(7).collect();
+        assert_eq!(bar, format!("{full}⣤{empty}"));
+    }
+
+    #[test]
+    fn test_render_bar_partial_high() {
+        // 87% → filled_eighths=69, full=8, partial=5 (⣦), empty=1
+        let bar = strip_ansi(&render_bar(87, 10, ""));
+        let full: String = std::iter::repeat('⣿').take(8).collect();
+        assert_eq!(bar, format!("{full}⣦⡀"));
+    }
+
+    // ── format_reset ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_format_reset_hours() {
+        let now = 1_000_000.0_f64;
+        assert_eq!(format_reset_impl(now + 7200.0, now), "2h 0m");
+    }
+
+    #[test]
+    fn test_format_reset_days() {
+        let now = 1_000_000.0_f64;
+        assert_eq!(format_reset_impl(now + 3.0 * 86400.0, now), "3d 0h 0m");
+    }
+
+    #[test]
+    fn test_format_reset_past() {
+        let now = 1_000_000.0_f64;
+        assert_eq!(format_reset_impl(now - 100.0, now), "0m");
+    }
+
+    // ── parse_effort ──────────────────────────────────────────────────────────
+
+    #[test]
+    fn test_parse_effort_string() {
+        let v = json!("medium");
+        assert_eq!(parse_effort(&v), Some("medium".to_string()));
+    }
+
+    #[test]
+    fn test_parse_effort_object() {
+        let v = json!({"level": "high"});
+        assert_eq!(parse_effort(&v), Some("high".to_string()));
+    }
+
+    #[test]
+    fn test_parse_effort_null() {
+        let v = json!(null);
+        assert_eq!(parse_effort(&v), None);
+    }
 }
 
 // ── main ──────────────────────────────────────────────────────────────────────
