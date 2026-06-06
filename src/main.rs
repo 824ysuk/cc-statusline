@@ -247,6 +247,18 @@ fn render_bar(pct: u32, width: usize, color: &str) -> String {
     s
 }
 
+fn render_rate_limit_part(label: &str, rl: Option<&RateLimit>, color: &str) -> Option<String> {
+    let rl = rl?;
+    let pct_f = rl.used_percentage?;
+    let pct = pct_f.max(0.0).round() as u32;
+    let bar = render_bar(pct, 10, color);
+    let reset = rl
+        .resets_at
+        .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
+        .unwrap_or_default();
+    Some(format!("{DIM}{label}{RESET} {bar} {color}{pct}%{RESET}{reset}"))
+}
+
 fn format_reset(resets_at: f64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -319,36 +331,9 @@ fn render_identity_line(stdin: &StdinData) -> String {
         ));
     }
 
-    // 5h usage
     if let Some(rl) = &stdin.rate_limits {
-        if let Some(fh) = &rl.five_hour {
-            if let Some(pct_f) = fh.used_percentage {
-                let pct = pct_f.max(0.0).round() as u32;
-                let bar = render_bar(pct, 10, BLUE_BRIGHT);
-                let reset = fh
-                    .resets_at
-                    .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
-                    .unwrap_or_default();
-                parts.push(format!(
-                    "{DIM}5h{RESET} {bar} {BLUE_BRIGHT}{pct}%{RESET}{reset}"
-                ));
-            }
-        }
-
-        // 7d usage
-        if let Some(sd) = &rl.seven_day {
-            if let Some(pct_f) = sd.used_percentage {
-                let pct = pct_f.max(0.0).round() as u32;
-                let bar = render_bar(pct, 10, BLUE_BRIGHT);
-                let reset = sd
-                    .resets_at
-                    .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
-                    .unwrap_or_default();
-                parts.push(format!(
-                    "{DIM}7d{RESET} {bar} {BLUE_BRIGHT}{pct}%{RESET}{reset}"
-                ));
-            }
-        }
+        parts.extend(render_rate_limit_part("5h", rl.five_hour.as_ref(), BLUE_BRIGHT));
+        parts.extend(render_rate_limit_part("7d", rl.seven_day.as_ref(), BLUE_BRIGHT));
     }
 
     let sep = format!(" {DIM}│{RESET} ");
