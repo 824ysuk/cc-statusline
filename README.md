@@ -45,21 +45,22 @@ dotfiles > feat-my-feature on worktree-feat-my-feature*
 - 表示順を変えたかった（ディレクトリ/ブランチ → モデル名/effort）
 - 依存を最小化したかった（`serde_json` のみ）
 
-## ビルド
+## インストール
 
 ```zsh
 # Rust が未インストールの場合
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
-# ビルド
 git clone https://github.com/824ysuk/cc-statusline
 cd cc-statusline
-bash build.sh
+cargo install --path .
 ```
+
+`~/.cargo/bin/statusline-rs` にインストールされます。rustup の標準設定では `~/.cargo/bin` が PATH に含まれるため、そのまま `statusline-rs` コマンドとして呼び出せます。
 
 ## セットアップ
 
-ビルド後、Claude Code の `StatusLine` フックとして登録します。`.claude/settings.json` に追加してください:
+Claude Code の `StatusLine` フックとして登録します。`.claude/settings.json` に追加してください:
 
 ```json
 {
@@ -69,7 +70,7 @@ bash build.sh
         "hooks": [
           {
             "type": "command",
-            "command": "/path/to/cc-statusline/target/release/statusline-rs"
+            "command": "statusline-rs"
           }
         ]
       }
@@ -79,6 +80,14 @@ bash build.sh
 ```
 
 バイナリは Claude Code から JSON を stdin で受け取り、ステータスライン文字列を stdout に出力します。
+
+### 開発時のバイナリ切り替え
+
+`cargo install` せずに手動ビルド（`cargo build --release`）のバイナリを使いたい場合は `STATUSLINE_RS_BIN` 環境変数で上書きできます:
+
+```zsh
+export STATUSLINE_RS_BIN="$HOME/Projects/cc-statusline/target/release/statusline-rs"
+```
 
 ## context カラーゾーン（claudeline 準拠）
 
