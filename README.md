@@ -4,11 +4,29 @@ Claude Code 用の Rust 製ステータスライン。Node.js 版 claude-hud の
 
 ## 表示例
 
-通常ディレクトリ:
+通常ディレクトリ（🟢 Green zone、~30%）:
 
 ```
 cc-statusline on main
-[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⡀⡀⡀⡀⡀⡀ 42% │ 5h ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 21% (resets in 2h 5m) │ 7d ⣿⣿⣿⡀⡀⡀⡀⡀⡀⡀ 31% (resets in 3d 1h 20m)
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⡀⡀⡀⡀⡀⡀⡀ 30% │ 5h ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 21% (resets in 2h 5m) │ 7d ⣿⣿⣿⡀⡀⡀⡀⡀⡀⡀ 31% (resets in 3d 1h 20m)
+```
+
+🟡 Yellow zone（~50%）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⡀⡀⡀⡀⡀ 50%
+```
+
+🟠 Orange zone（~70%）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣿⣿⡀⡀⡀ 70%
+```
+
+🔴 Red zone（~90%）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣿⣿⣿⣿⡀ 90%
 ```
 
 worktree 内（`.claude/worktrees/<name>/`）:
