@@ -4,12 +4,39 @@ Claude Code 用の Rust 製ステータスライン。Node.js 版 claude-hud の
 
 ## 表示例
 
+通常ディレクトリ（🟢 Green zone、26%）:
+
 ```
-dotfiles on main  PR: https://github.com/owner/dotfiles/pull/123
-[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀ 42% │ 5h ⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀ 21% (resets in 2h 5m) │ 7d ⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀ 31% (resets in 3d 1h 20m)
+cc-statusline on main
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣤⡀⡀⡀⡀⡀⡀⡀ 26% │ 5h ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 21% (resets in 2h 5m) │ 7d ⣿⣿⣿⡀⡀⡀⡀⡀⡀⡀ 31% (resets in 3d 1h 20m)
 ```
 
-- Line 1: ディレクトリ / git ブランチ / PR URL（feature ブランチのみ）
+🟡 Yellow zone（53%）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣀⡀⡀⡀⡀ 53%
+```
+
+🟠 Orange zone（69%）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣿⣷⡀⡀⡀ 69%
+```
+
+🔴 Red zone（87%）:
+
+```
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⣿⣿⣿⣿⣦⡀ 87%
+```
+
+worktree 内（`.claude/worktrees/<name>/`）:
+
+```
+dotfiles > feat-my-feature on worktree-feat-my-feature*
+[Sonnet 4.6 | medium] │ Context ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 20%
+```
+
+- Line 1: ディレクトリ（worktree 時は `repo > wt_name`）/ git ブランチ / dirty マーク `*`
 - Line 2: モデル名 / effort │ Context バー │ 5h 使用率 │ 7d 使用率
 
 ## なぜ作ったか
@@ -25,13 +52,33 @@ dotfiles on main  PR: https://github.com/owner/dotfiles/pull/123
 curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | sh
 
 # ビルド
-bash ~/dotfiles/statusline-rs/build.sh
+git clone https://github.com/824ysuk/cc-statusline
+cd cc-statusline
+bash build.sh
 ```
 
 ## セットアップ
 
-ビルド後、`statusline-with-pr.sh` が自動的にこのバイナリを検出して使います。
-バイナリが存在しない場合はステータスラインが表示されません。必ずビルドを実行してください。
+ビルド後、Claude Code の `StatusLine` フックとして登録します。`.claude/settings.json` に追加してください:
+
+```json
+{
+  "hooks": {
+    "StatusLine": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "/path/to/cc-statusline/target/release/statusline-rs"
+          }
+        ]
+      }
+    ]
+  }
+}
+```
+
+バイナリは Claude Code から JSON を stdin で受け取り、ステータスライン文字列を stdout に出力します。
 
 ## context カラーゾーン（claudeline 準拠）
 

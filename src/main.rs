@@ -205,14 +205,22 @@ fn context_color(pct: u32) -> &'static str {
     }
 }
 
-// 1文字セルに2色は入れられないため partial char は使わず整数丸め。背景は ⡀（DIM）で全体幅を可視化
+// btop スタイル 8段階ブライユバー。partial char は単色だが文字自体が充填率を表現する。空: ⡀（DIM）
+const BRAILLE_LEVELS: [char; 9] = ['⠀', '⡀', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿'];
+
 fn render_bar(pct: u32, width: usize, color: &str) -> String {
-    let full_chars = ((pct as usize * width) / 100).min(width);
-    let empty_chars = width - full_chars;
+    let filled_eighths = ((pct as usize * width * 8) / 100).min(width * 8);
+    let full_chars = filled_eighths / 8;
+    let partial = filled_eighths % 8;
+    let has_partial = partial > 0 && full_chars < width;
+    let empty_chars = width - full_chars - if has_partial { 1 } else { 0 };
 
     let mut s = format!("{color}");
     for _ in 0..full_chars {
         s.push('⣿');
+    }
+    if has_partial {
+        s.push(BRAILLE_LEVELS[partial]);
     }
     s.push_str(DIM);
     for _ in 0..empty_chars {

@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # statusline-rs ビルドスクリプト
-# 使い方: bash ~/dotfiles/statusline-rs/build.sh
+# 使い方: bash build.sh
 set -euo pipefail
 
 SCRIPT_DIR="$(cd -P "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
