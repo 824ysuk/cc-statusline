@@ -1,0 +1,345 @@
+use std::io::{self, Read};
+use std::process::Command;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use serde::Deserialize;
+use serde_json::Value;
+
+// ── ANSI escape codes ─────────────────────────────────────────────────────────
+const RESET: &str = "\x1b[0m";
+const DIM: &str = "\x1b[2m";
+const CYAN: &str = "\x1b[36m";
+const YELLOW: &str = "\x1b[33m";
+const MAGENTA: &str = "\x1b[35m";
+const CYAN_BRIGHT: &str = "\x1b[96m";
+const GREEN: &str = "\x1b[32m";
+const ORANGE: &str = "\x1b[38;5;208m";
+const RED: &str = "\x1b[31m";
+const BLUE_BRIGHT: &str = "\x1b[94m";
+
+// ── stdin JSON schema ─────────────────────────────────────────────────────────
+#[derive(Deserialize, Default)]
+struct StdinData {
+    cwd: Option<String>,
+    #[serde(default)]
+    workspace: Option<Workspace>,
+    model: Option<Model>,
+    context_window: Option<ContextWindow>,
+    rate_limits: Option<RateLimits>,
+    // effort: string | { level: string } | null (Claude Code 2.1.115+)
+    effort: Option<Value>,
+}
+
+#[derive(Deserialize, Default)]
+struct Workspace {
+    current_dir: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct Model {
+    display_name: Option<String>,
+    id: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct ContextWindow {
+    context_window_size: Option<u64>,
+    used_percentage: Option<f64>,
+    current_usage: Option<CurrentUsage>,
+}
+
+#[derive(Deserialize)]
+struct CurrentUsage {
+    input_tokens: Option<u64>,
+    cache_creation_input_tokens: Option<u64>,
+    cache_read_input_tokens: Option<u64>,
+}
+
+#[derive(Deserialize)]
+struct RateLimits {
+    five_hour: Option<RateLimit>,
+    seven_day: Option<RateLimit>,
+}
+
+#[derive(Deserialize)]
+struct RateLimit {
+    used_percentage: Option<f64>,
+    resets_at: Option<f64>,
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────────
+
+fn read_stdin() -> String {
+    let mut buf = String::new();
+    io::stdin().read_to_string(&mut buf).unwrap_or_default();
+    buf
+}
+
+/// 末尾 N 階層のディレクトリ名を返す（pathLevels 相当）
+fn dir_name(cwd: &str, levels: usize) -> String {
+    // ~ 展開
+    let expanded = if let Ok(home) = std::env::var("HOME") {
+        cwd.replacen(&home as &str, "~", 1)
+    } else {
+        cwd.to_string()
+    };
+
+    let parts: Vec<&str> = expanded.split('/').filter(|s| !s.is_empty()).collect();
+    if parts.is_empty() {
+        return "/".to_string();
+    }
+    let start = parts.len().saturating_sub(levels);
+    // 先頭が ~ のとき prefix を維持
+    if expanded.starts_with("~/") || expanded == "~" {
+        let tail = parts[start..].to_vec();
+        if start == 0 {
+            format!("~/{}", tail.join("/"))
+        } else {
+            tail.join("/")
+        }
+    } else {
+        parts[start..].join("/")
+    }
+}
+
+struct GitInfo {
+    branch: String,
+    is_dirty: bool,
+}
+
+struct LocationInfo {
+    display: String,
+    git_root: String,
+}
+
+/// cwd から表示用ロケーション情報を解決する
+/// `.claude/worktrees/<name>/` が含まれる場合: "repo > wt_name"
+/// 通常の場合: dir_name(cwd, 1)
+fn resolve_location(cwd: &str) -> LocationInfo {
+    // `.claude/worktrees/<name>` パターンを検索
+    if let Some(pos) = cwd.find("/.claude/worktrees/") {
+        let after = &cwd[pos + "/.claude/worktrees/".len()..];
+        let wt_name = after.split('/').next().unwrap_or("");
+        if !wt_name.is_empty() {
+            let repo_root = &cwd[..pos];
+            let repo_name = repo_root.split('/').last().unwrap_or(repo_root);
+            let git_root = format!("{repo_root}/.claude/worktrees/{wt_name}");
+            return LocationInfo {
+                display: format!("{repo_name} > {wt_name}"),
+                git_root,
+            };
+        }
+    }
+    // 通常パス
+    LocationInfo {
+        display: dir_name(cwd, 1),
+        git_root: cwd.to_string(),
+    }
+}
+
+/// git -C <dir> でブランチと dirty 状態を取得（失敗時は None）
+fn git_info(cwd: &str) -> Option<GitInfo> {
+    let branch_out = Command::new("git")
+        .args(["-C", cwd, "symbolic-ref", "--short", "HEAD"])
+        .output()
+        .ok()?;
+
+    if !branch_out.status.success() {
+        return None;
+    }
+    let branch = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
+    if branch.is_empty() {
+        return None;
+    }
+
+    let dirty_out = Command::new("git")
+        .args(["-C", cwd, "status", "--porcelain"])
+        .output()
+        .ok()?;
+    let is_dirty = !dirty_out.stdout.is_empty();
+
+    Some(GitInfo { branch, is_dirty })
+}
+
+/// effort フィールドを文字列に変換（string | {level} の両形式対応）
+fn parse_effort(v: &Value) -> Option<String> {
+    match v {
+        Value::String(s) => Some(s.clone()),
+        Value::Object(map) => map
+            .get("level")
+            .and_then(|lv| lv.as_str())
+            .map(|s| s.to_string()),
+        _ => None,
+    }
+}
+
+/// context 使用率を 0-100 で返す
+fn context_pct(ctx: &ContextWindow) -> u32 {
+    // Claude Code 2.1.6+ は used_percentage を直接送る
+    if let Some(pct) = ctx.used_percentage {
+        if pct > 0.0 {
+            return pct.max(0.0).round() as u32;
+        }
+    }
+    // フォールバック: トークン合計から計算
+    let size = ctx.context_window_size.unwrap_or(0);
+    if size == 0 {
+        return 0;
+    }
+    if let Some(usage) = &ctx.current_usage {
+        let total = usage.input_tokens.unwrap_or(0)
+            + usage.cache_creation_input_tokens.unwrap_or(0)
+            + usage.cache_read_input_tokens.unwrap_or(0);
+        return ((total as f64 / size as f64) * 100.0).max(0.0) as u32;
+    }
+    0
+}
+
+/// claudeline の 4 ゾーン配色
+fn context_color(pct: u32) -> &'static str {
+    match pct {
+        0..=40 => GREEN,
+        41..=60 => YELLOW,
+        61..=80 => ORANGE,
+        81..=100 => RED,
+        _ => MAGENTA,
+    }
+}
+
+// 1文字セルに2色は入れられないため partial char は使わず整数丸め。背景は ⡀（DIM）で全体幅を可視化
+fn render_bar(pct: u32, width: usize, color: &str) -> String {
+    let full_chars = ((pct as usize * width) / 100).min(width);
+    let empty_chars = width - full_chars;
+
+    let mut s = format!("{color}");
+    for _ in 0..full_chars {
+        s.push('⣿');
+    }
+    s.push_str(DIM);
+    for _ in 0..empty_chars {
+        s.push('⡀');
+    }
+    s.push_str(RESET);
+    s
+}
+
+fn format_reset(resets_at: f64) -> String {
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or(Duration::ZERO)
+        .as_secs_f64();
+    let secs = (resets_at - now).max(0.0) as u64;
+    let d = secs / 86400;
+    let h = (secs % 86400) / 3600;
+    let m = (secs % 3600) / 60;
+    if d > 0 {
+        format!("{}d {}h {}m", d, h, m)
+    } else if h > 0 {
+        format!("{}h {}m", h, m)
+    } else {
+        format!("{}m", m)
+    }
+}
+
+// ── render ────────────────────────────────────────────────────────────────────
+
+fn render_dir_line(stdin: &StdinData) -> Option<String> {
+    // workspace.current_dir を優先、なければ cwd
+    let cwd = stdin
+        .workspace
+        .as_ref()
+        .and_then(|w| w.current_dir.as_deref())
+        .or(stdin.cwd.as_deref())?;
+
+    let loc = resolve_location(cwd);
+    let mut s = format!("{YELLOW}{}{RESET}", loc.display);
+
+    if let Some(git) = git_info(&loc.git_root) {
+        let dirty = if git.is_dirty { "*" } else { "" };
+        s.push_str(&format!(
+            " {DIM}on{RESET} {CYAN_BRIGHT}{branch}{dirty}{RESET}",
+            branch = git.branch,
+        ));
+    }
+    Some(s)
+}
+
+fn render_identity_line(stdin: &StdinData) -> String {
+    let mut parts: Vec<String> = Vec::new();
+
+    // [Model | effort]
+    let model_name = stdin
+        .model
+        .as_ref()
+        .and_then(|m| m.display_name.as_deref().or(m.id.as_deref()))
+        .unwrap_or("Unknown");
+
+    let effort = stdin.effort.as_ref().and_then(|e| parse_effort(e));
+    let badge = match effort.as_deref() {
+        Some(e) => format!("{CYAN}[{model_name} | {e}]{RESET}"),
+        None => format!("{CYAN}[{model_name}]{RESET}"),
+    };
+    parts.push(badge);
+
+    // Context bar
+    if let Some(ctx) = &stdin.context_window {
+        let pct = context_pct(ctx);
+        let color = context_color(pct);
+        let bar = render_bar(pct, 10, color);
+        parts.push(format!(
+            "{DIM}Context{RESET} {bar} {color}{pct}%{RESET}"
+        ));
+    }
+
+    // 5h usage
+    if let Some(rl) = &stdin.rate_limits {
+        if let Some(fh) = &rl.five_hour {
+            if let Some(pct_f) = fh.used_percentage {
+                let pct = pct_f.max(0.0).round() as u32;
+                let bar = render_bar(pct, 10, BLUE_BRIGHT);
+                let reset = fh
+                    .resets_at
+                    .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
+                    .unwrap_or_default();
+                parts.push(format!(
+                    "{DIM}5h{RESET} {bar} {BLUE_BRIGHT}{pct}%{RESET}{reset}"
+                ));
+            }
+        }
+
+        // 7d usage
+        if let Some(sd) = &rl.seven_day {
+            if let Some(pct_f) = sd.used_percentage {
+                let pct = pct_f.max(0.0).round() as u32;
+                let bar = render_bar(pct, 10, BLUE_BRIGHT);
+                let reset = sd
+                    .resets_at
+                    .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
+                    .unwrap_or_default();
+                parts.push(format!(
+                    "{DIM}7d{RESET} {bar} {BLUE_BRIGHT}{pct}%{RESET}{reset}"
+                ));
+            }
+        }
+    }
+
+    let sep = format!(" {DIM}│{RESET} ");
+    parts.join(&sep)
+}
+
+// ── main ──────────────────────────────────────────────────────────────────────
+
+fn main() {
+    let raw = read_stdin();
+    let stdin: StdinData = serde_json::from_str(&raw).unwrap_or_default();
+
+    // Line 1: directory + git branch
+    if let Some(line) = render_dir_line(&stdin) {
+        println!("{RESET}{line}");
+    }
+
+    // Line 2: [model | effort] │ Context bar │ Usage bar
+    let identity = render_identity_line(&stdin);
+    if !identity.is_empty() {
+        print!("{RESET}{identity}");
+    }
+}
