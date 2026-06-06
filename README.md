@@ -4,12 +4,21 @@ Claude Code 用の Rust 製ステータスライン。Node.js 版 claude-hud の
 
 ## 表示例
 
+通常ディレクトリ:
+
 ```
-dotfiles on main  PR: https://github.com/owner/dotfiles/pull/123
-[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⠀⠀⠀⠀⠀⠀ 42% │ 5h ⣿⣿⠀⠀⠀⠀⠀⠀⠀⠀ 21% (resets in 2h 5m) │ 7d ⣿⣿⣿⠀⠀⠀⠀⠀⠀⠀ 31% (resets in 3d 1h 20m)
+cc-statusline on main
+[Sonnet 4.6 | medium] │ Context ⣿⣿⣿⣿⡀⡀⡀⡀⡀⡀ 42% │ 5h ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 21% (resets in 2h 5m) │ 7d ⣿⣿⣿⡀⡀⡀⡀⡀⡀⡀ 31% (resets in 3d 1h 20m)
 ```
 
-- Line 1: ディレクトリ / git ブランチ / PR URL（feature ブランチのみ）
+worktree 内（`.claude/worktrees/<name>/`）:
+
+```
+dotfiles > feat-my-feature on feat-my-feature*
+[Sonnet 4.6 | medium] │ Context ⣿⣿⡀⡀⡀⡀⡀⡀⡀⡀ 20%
+```
+
+- Line 1: ディレクトリ（worktree 時は `repo > wt_name`）/ git ブランチ / dirty マーク `*`
 - Line 2: モデル名 / effort │ Context バー │ 5h 使用率 │ 7d 使用率
 
 ## なぜ作ったか
