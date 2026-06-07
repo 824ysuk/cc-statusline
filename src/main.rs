@@ -312,7 +312,7 @@ fn context_pct(ctx: &ContextWindow) -> u32 {
         let total = usage.input_tokens.unwrap_or(0)
             + usage.cache_creation_input_tokens.unwrap_or(0)
             + usage.cache_read_input_tokens.unwrap_or(0);
-        return ((total as f64 / size as f64) * 100.0) as u32;
+        return (((total as f64 / size as f64) * 100.0) as u32).min(100);
     }
     0
 }
@@ -572,6 +572,21 @@ mod tests {
             context_window_size: None,
             used_percentage: Some(105.0),
             current_usage: None,
+        };
+        assert_eq!(context_pct(&ctx), 100);
+    }
+
+    #[test]
+    fn test_context_pct_token_fallback_clamp_over_100() {
+        // トークン合計がウィンドウサイズを超えても 100 を返す（フォールバックパスのクランプ）
+        let ctx = ContextWindow {
+            context_window_size: Some(100_000),
+            used_percentage: None,
+            current_usage: Some(CurrentUsage {
+                input_tokens: Some(120_000),
+                cache_creation_input_tokens: Some(0),
+                cache_read_input_tokens: Some(0),
+            }),
         };
         assert_eq!(context_pct(&ctx), 100);
     }
