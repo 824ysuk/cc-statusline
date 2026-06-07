@@ -70,11 +70,19 @@ fn setup_huge_repo(untracked_count: usize) -> TempDir {
     // HEAD を作るため空の初回 commit を打つ (config は -c で local override)。
     let commit = Command::new("git")
         .args([
-            "-C", path,
-            "-c", "user.email=bench@example.com",
-            "-c", "user.name=bench",
-            "-c", "commit.gpgsign=false",
-            "commit", "--allow-empty", "-q", "-m", "init",
+            "-C",
+            path,
+            "-c",
+            "user.email=bench@example.com",
+            "-c",
+            "user.name=bench",
+            "-c",
+            "commit.gpgsign=false",
+            "commit",
+            "--allow-empty",
+            "-q",
+            "-m",
+            "init",
         ])
         .status()
         .expect("git commit");

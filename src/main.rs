@@ -1,9 +1,9 @@
+use serde::Deserialize;
+use serde_json::Value;
 use std::io::{self, Read};
 use std::process::{Command, Stdio};
 use std::thread;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
-use serde::Deserialize;
-use serde_json::Value;
 
 // ── ANSI escape codes ─────────────────────────────────────────────────────────
 const RESET: &str = "\x1b[0m";
@@ -21,7 +21,6 @@ const BLUE_BRIGHT: &str = "\x1b[94m";
 #[derive(Deserialize, Default)]
 struct StdinData {
     cwd: Option<String>,
-    #[serde(default)]
     workspace: Option<Workspace>,
     model: Option<Model>,
     context_window: Option<ContextWindow>,
@@ -104,11 +103,10 @@ fn dir_name_impl(cwd: &str, levels: usize, home: Option<&str>) -> String {
     let start = parts.len().saturating_sub(levels);
     // 先頭が ~ のとき prefix を維持
     if expanded.starts_with("~/") || expanded == "~" {
-        let tail = parts[start..].to_vec();
         if start == 0 {
-            format!("~/{}", tail.join("/"))
+            format!("~/{}", parts[start..].join("/"))
         } else {
-            tail.join("/")
+            parts[start..].join("/")
         }
     } else {
         parts[start..].join("/")
@@ -179,7 +177,7 @@ fn resolve_location(cwd: &str) -> LocationInfo {
         let wt_name = after.split('/').next().unwrap_or("");
         if !wt_name.is_empty() {
             let repo_root = &cwd[..pos];
-            let repo_name = repo_root.split('/').last().unwrap_or(repo_root);
+            let repo_name = repo_root.split('/').next_back().unwrap_or(repo_root);
             let git_root = format!("{repo_root}/.claude/worktrees/{wt_name}");
             return LocationInfo {
                 display: format!("{repo_name} > {wt_name}"),
@@ -291,10 +289,12 @@ fn parse_effort(v: &Value) -> Option<String> {
 
 /// context 使用率を 0-100 で返す
 fn context_pct(ctx: &ContextWindow) -> u32 {
-    // Claude Code 2.1.6+ は used_percentage を直接送る
+    // Claude Code 2.1.6+ は used_percentage を直接送る。
+    // pct == 0.0 は「未計測 / セッション開始直後」の sentinel として扱い、
+    // フォールバックの token 合計計算に落とす (両方 0 の場合はそのまま 0 が返る)。
     if let Some(pct) = ctx.used_percentage {
         if pct > 0.0 {
-            return pct.max(0.0).round() as u32;
+            return pct.round() as u32;
         }
     }
     // フォールバック: トークン合計から計算
@@ -306,7 +306,7 @@ fn context_pct(ctx: &ContextWindow) -> u32 {
         let total = usage.input_tokens.unwrap_or(0)
             + usage.cache_creation_input_tokens.unwrap_or(0)
             + usage.cache_read_input_tokens.unwrap_or(0);
-        return ((total as f64 / size as f64) * 100.0).max(0.0) as u32;
+        return ((total as f64 / size as f64) * 100.0) as u32;
     }
     0
 }
@@ -322,8 +322,10 @@ fn context_color(pct: u32) -> &'static str {
     }
 }
 
-// btop スタイル 8段階ブライユバー。partial char は単色だが文字自体が充填率を表現する。空: ⡀（DIM）
-const BRAILLE_LEVELS: [char; 9] = ['⠀', '⡀', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷', '⣿'];
+// btop スタイル ブライユバー。partial 充填用 7 段階 (1/8 〜 7/8)。
+// 0/8 は DIM 適用の '⡀' を空 cell に、8/8 は '⣿' を full cell にハードコードで使う
+// ため、ここには partial 1..=7 だけを格納する (`partial - 1` で索引する)。
+const BRAILLE_PARTIAL_LEVELS: [char; 7] = ['⡀', '⣀', '⣄', '⣤', '⣦', '⣶', '⣷'];
 
 fn render_bar(pct: u32, width: usize, color: &str) -> String {
     let filled_eighths = ((pct as usize * width * 8) / 100).min(width * 8);
@@ -332,12 +334,12 @@ fn render_bar(pct: u32, width: usize, color: &str) -> String {
     let has_partial = partial > 0 && full_chars < width;
     let empty_chars = width - full_chars - if has_partial { 1 } else { 0 };
 
-    let mut s = format!("{color}");
+    let mut s = String::from(color);
     for _ in 0..full_chars {
         s.push('⣿');
     }
     if has_partial {
-        s.push(BRAILLE_LEVELS[partial]);
+        s.push(BRAILLE_PARTIAL_LEVELS[partial - 1]);
     }
     s.push_str(DIM);
     for _ in 0..empty_chars {
@@ -356,7 +358,9 @@ fn render_rate_limit_part(label: &str, rl: Option<&RateLimit>, color: &str) -> O
         .resets_at
         .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
         .unwrap_or_default();
-    Some(format!("{DIM}{label}{RESET} {bar} {color}{pct}%{RESET}{reset}"))
+    Some(format!(
+        "{DIM}{label}{RESET} {bar} {color}{pct}%{RESET}{reset}"
+    ))
 }
 
 fn format_reset(resets_at: f64) -> String {
@@ -418,7 +422,7 @@ fn render_identity_line(stdin: &StdinData) -> String {
         .and_then(|m| m.display_name.as_deref().or(m.id.as_deref()))
         .unwrap_or("Unknown");
 
-    let effort = stdin.effort.as_ref().and_then(|e| parse_effort(e));
+    let effort = stdin.effort.as_ref().and_then(parse_effort);
     let badge = match effort.as_deref() {
         Some(e) => format!("{CYAN}[{model_name} | {e}]{RESET}"),
         None => format!("{CYAN}[{model_name}]{RESET}"),
@@ -430,14 +434,20 @@ fn render_identity_line(stdin: &StdinData) -> String {
         let pct = context_pct(ctx);
         let color = context_color(pct);
         let bar = render_bar(pct, 10, color);
-        parts.push(format!(
-            "{DIM}Context{RESET} {bar} {color}{pct}%{RESET}"
-        ));
+        parts.push(format!("{DIM}Context{RESET} {bar} {color}{pct}%{RESET}"));
     }
 
     if let Some(rl) = &stdin.rate_limits {
-        parts.extend(render_rate_limit_part("5h", rl.five_hour.as_ref(), BLUE_BRIGHT));
-        parts.extend(render_rate_limit_part("7d", rl.seven_day.as_ref(), BLUE_BRIGHT));
+        parts.extend(render_rate_limit_part(
+            "5h",
+            rl.five_hour.as_ref(),
+            BLUE_BRIGHT,
+        ));
+        parts.extend(render_rate_limit_part(
+            "7d",
+            rl.seven_day.as_ref(),
+            BLUE_BRIGHT,
+        ));
     }
 
     let sep = format!(" {DIM}│{RESET} ");
@@ -551,40 +561,33 @@ mod tests {
     #[test]
     fn test_render_bar_zero() {
         let bar = strip_ansi(&render_bar(0, 10, ""));
-        let expected: String = std::iter::repeat('⡀').take(10).collect();
-        assert_eq!(bar, expected);
+        assert_eq!(bar, "⡀".repeat(10));
     }
 
     #[test]
     fn test_render_bar_full() {
         let bar = strip_ansi(&render_bar(100, 10, ""));
-        let expected: String = std::iter::repeat('⣿').take(10).collect();
-        assert_eq!(bar, expected);
+        assert_eq!(bar, "⣿".repeat(10));
     }
 
     #[test]
     fn test_render_bar_half() {
         let bar = strip_ansi(&render_bar(50, 10, ""));
-        let full: String = std::iter::repeat('⣿').take(5).collect();
-        let empty: String = std::iter::repeat('⡀').take(5).collect();
-        assert_eq!(bar, format!("{full}{empty}"));
+        assert_eq!(bar, format!("{}{}", "⣿".repeat(5), "⡀".repeat(5)));
     }
 
     #[test]
     fn test_render_bar_partial_low() {
         // 25% → filled_eighths=20, full=2, partial=4 (⣤), empty=7
         let bar = strip_ansi(&render_bar(25, 10, ""));
-        let full: String = std::iter::repeat('⣿').take(2).collect();
-        let empty: String = std::iter::repeat('⡀').take(7).collect();
-        assert_eq!(bar, format!("{full}⣤{empty}"));
+        assert_eq!(bar, format!("{}⣤{}", "⣿".repeat(2), "⡀".repeat(7)));
     }
 
     #[test]
     fn test_render_bar_partial_high() {
         // 87% → filled_eighths=69, full=8, partial=5 (⣦), empty=1
         let bar = strip_ansi(&render_bar(87, 10, ""));
-        let full: String = std::iter::repeat('⣿').take(8).collect();
-        assert_eq!(bar, format!("{full}⣦⡀"));
+        assert_eq!(bar, format!("{}⣦⡀", "⣿".repeat(8)));
     }
 
     // ── format_reset ──────────────────────────────────────────────────────────
@@ -887,7 +890,9 @@ mod tests {
     fn test_run_command_with_timeout_success() {
         // `printf hello` は exit 0 で stdout に "hello" を出力
         let mut cmd = Command::new("printf");
-        cmd.arg("hello").stdout(Stdio::piped()).stderr(Stdio::null());
+        cmd.arg("hello")
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null());
         let out = run_command_with_timeout(cmd, Duration::from_secs(2)).unwrap();
         assert_eq!(out, b"hello");
     }
@@ -930,11 +935,13 @@ fn main() {
         std::process::exit(1);
     });
 
-    // Line 1: directory + git branch
+    // Line 1: directory + git branch (改行で Line 2 と分離)
     if let Some(line) = render_dir_line(&stdin) {
         println!("{RESET}{line}");
     }
 
     // Line 2: [model | effort] │ Context bar │ Usage bar
+    // 末尾改行を出さない — statusline は親プロセス (Claude Code) が改行を制御する。
+    // `println!` で改行を足すと表示行が 1 行ずれる。
     print!("{RESET}{}", render_identity_line(&stdin));
 }
