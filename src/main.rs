@@ -739,6 +739,24 @@ mod tests {
     }
 
     #[test]
+    fn test_render_identity_line_model_id_fallback() {
+        // display_name が None なら id にフォールバックする
+        let stdin = StdinData {
+            cwd: None,
+            workspace: None,
+            model: Some(Model {
+                display_name: None,
+                id: Some("opus-4-7".to_string()),
+            }),
+            context_window: None,
+            rate_limits: None,
+            effort: None,
+        };
+        let plain = strip_ansi(&render_identity_line(&stdin));
+        assert_eq!(plain, "[opus-4-7]");
+    }
+
+    #[test]
     fn test_render_identity_line_unknown_model() {
         // model が None のとき "Unknown" badge を出す
         let stdin = StdinData::default();
