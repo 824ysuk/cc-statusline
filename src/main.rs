@@ -265,11 +265,11 @@ fn git_info(cwd: &str) -> Option<GitInfo> {
     git_info_with_runner(cwd, run_git_with_timeout)
 }
 
-fn git_info_with_runner<F>(cwd: &str, run: F) -> Option<GitInfo>
+fn git_info_with_runner<F>(cwd: &str, runner: F) -> Option<GitInfo>
 where
     F: Fn(&[&str]) -> Option<Vec<u8>>,
 {
-    let stdout = run(&[
+    let stdout = runner(&[
         "-C",
         cwd,
         "--no-optional-locks",
@@ -567,7 +567,7 @@ mod tests {
 
     #[test]
     fn test_context_pct_clamp_over_100() {
-        // API が 100% 超の値を送っても 100 にクランプする (#24)
+        // API が 100% 超の値を送っても 100 にクランプする
         let ctx = ContextWindow {
             context_window_size: None,
             used_percentage: Some(105.0),
@@ -662,7 +662,7 @@ mod tests {
 
     #[test]
     fn test_format_reset_past() {
-        // 期限切れ時は None — "(resets in 0m)" という誤表示を防ぐ (#37)
+        // 期限切れ時は None — "(resets in 0m)" という誤表示を防ぐ
         let now = 1_000_000.0_f64;
         assert_eq!(format_reset_impl(now - 100.0, now), None);
     }
@@ -787,7 +787,6 @@ mod tests {
 
     #[test]
     fn test_render_rate_limit_part_high_usage_uses_red() {
-        // 90% → context_color(90) = RED (#42)
         let rl = RateLimit {
             used_percentage: Some(90.0),
             resets_at: None,
@@ -798,7 +797,6 @@ mod tests {
 
     #[test]
     fn test_render_rate_limit_part_low_usage_uses_green() {
-        // 20% → context_color(20) = GREEN (#42)
         let rl = RateLimit {
             used_percentage: Some(20.0),
             resets_at: None,
@@ -1014,7 +1012,6 @@ mod tests {
 
     #[test]
     fn test_git_info_with_runner_success() {
-        // fake runner が正常な porcelain v2 を返す → branch / dirty が取れる (#29)
         let stdout = b"# branch.oid 0123456789abcdef0123456789abcdef01234567\n\
                        # branch.head main\n\
                        # branch.ab +0 -0\n";
@@ -1035,13 +1032,11 @@ mod tests {
 
     #[test]
     fn test_git_info_with_runner_none_on_failure() {
-        // runner が None を返す（git 失敗 / タイムアウト等）→ None (#29)
         assert!(git_info_with_runner("/any/path", |_args| None).is_none());
     }
 
     #[test]
     fn test_git_info_with_runner_invalid_output() {
-        // runner が不正 UTF-8 を返す → parse_porcelain_v2 が None → None (#29)
         assert!(git_info_with_runner("/any/path", |_args| Some(vec![0xff, 0xfe])).is_none());
     }
 }
