@@ -294,7 +294,7 @@ fn context_pct(ctx: &ContextWindow) -> u32 {
     // フォールバックの token 合計計算に落とす (両方 0 の場合はそのまま 0 が返る)。
     if let Some(pct) = ctx.used_percentage {
         if pct > 0.0 {
-            return pct.round() as u32;
+            return pct.clamp(0.0, 100.0).round() as u32;
         }
     }
     // フォールバック: トークン合計から計算
@@ -352,18 +352,19 @@ fn render_bar(pct: u32, width: usize, color: &str) -> String {
 fn render_rate_limit_part(label: &str, rl: Option<&RateLimit>, color: &str) -> Option<String> {
     let rl = rl?;
     let pct_f = rl.used_percentage?;
-    let pct = pct_f.max(0.0).round() as u32;
+    let pct = pct_f.clamp(0.0, 100.0).round() as u32;
     let bar = render_bar(pct, 10, color);
     let reset = rl
         .resets_at
-        .map(|t| format!(" {DIM}(resets in {}){RESET}", format_reset(t)))
+        .and_then(format_reset)
+        .map(|s| format!(" {DIM}(resets in {s}){RESET}"))
         .unwrap_or_default();
     Some(format!(
         "{DIM}{label}{RESET} {bar} {color}{pct}%{RESET}{reset}"
     ))
 }
 
-fn format_reset(resets_at: f64) -> String {
+fn format_reset(resets_at: f64) -> Option<String> {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or(Duration::ZERO)
@@ -371,18 +372,21 @@ fn format_reset(resets_at: f64) -> String {
     format_reset_impl(resets_at, now)
 }
 
-fn format_reset_impl(resets_at: f64, now_secs: f64) -> String {
-    let secs = (resets_at - now_secs).max(0.0) as u64;
+fn format_reset_impl(resets_at: f64, now_secs: f64) -> Option<String> {
+    if resets_at <= now_secs {
+        return None;
+    }
+    let secs = (resets_at - now_secs) as u64;
     let d = secs / 86400;
     let h = (secs % 86400) / 3600;
     let m = (secs % 3600) / 60;
-    if d > 0 {
+    Some(if d > 0 {
         format!("{}d {}h {}m", d, h, m)
     } else if h > 0 {
         format!("{}h {}m", h, m)
     } else {
         format!("{}m", m)
-    }
+    })
 }
 
 // ── render ────────────────────────────────────────────────────────────────────
@@ -460,7 +464,6 @@ fn main() {
     let raw = read_stdin();
     let stdin: StdinData = serde_json::from_str(&raw).unwrap_or_else(|e| {
         eprintln!("statusline-rs: JSON parse error: {e}");
-        eprintln!("input: {raw}");
         std::process::exit(1);
     });
 
@@ -563,6 +566,17 @@ mod tests {
     }
 
     #[test]
+    fn test_context_pct_clamp_over_100() {
+        // API が 100% 超の値を送っても 100 にクランプする (#24)
+        let ctx = ContextWindow {
+            context_window_size: None,
+            used_percentage: Some(105.0),
+            current_usage: None,
+        };
+        assert_eq!(context_pct(&ctx), 100);
+    }
+
+    #[test]
     fn test_context_pct_used_percentage_zero_falls_through_to_token() {
         // used_percentage = 0.0 は「値なし」として扱い token fallback へ落ちる
         let ctx = ContextWindow {
@@ -616,19 +630,33 @@ mod tests {
     #[test]
     fn test_format_reset_hours() {
         let now = 1_000_000.0_f64;
-        assert_eq!(format_reset_impl(now + 7200.0, now), "2h 0m");
+        assert_eq!(
+            format_reset_impl(now + 7200.0, now),
+            Some("2h 0m".to_string())
+        );
     }
 
     #[test]
     fn test_format_reset_days() {
         let now = 1_000_000.0_f64;
-        assert_eq!(format_reset_impl(now + 3.0 * 86400.0, now), "3d 0h 0m");
+        assert_eq!(
+            format_reset_impl(now + 3.0 * 86400.0, now),
+            Some("3d 0h 0m".to_string())
+        );
     }
 
     #[test]
     fn test_format_reset_past() {
+        // 期限切れ時は None — "(resets in 0m)" という誤表示を防ぐ (#37)
         let now = 1_000_000.0_f64;
-        assert_eq!(format_reset_impl(now - 100.0, now), "0m");
+        assert_eq!(format_reset_impl(now - 100.0, now), None);
+    }
+
+    #[test]
+    fn test_format_reset_exact_now() {
+        // resets_at == now のときも期限切れ扱い
+        let now = 1_000_000.0_f64;
+        assert_eq!(format_reset_impl(now, now), None);
     }
 
     // ── parse_effort ──────────────────────────────────────────────────────────
