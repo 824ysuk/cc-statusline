@@ -203,21 +203,19 @@ const GIT_TIMEOUT: Duration = Duration::from_millis(500);
 /// try_wait ポーリング間隔。短命プロンプトでは 5ms 単位で十分。
 const GIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
 
-/// git コマンドをタイムアウト付きで実行し、成功した stdout を返す。
+/// 任意の `Command` をタイムアウト付きで実行し、成功した stdout を返す。
 ///
 /// Issue #21: `Command::output()` は無期限ブロックするため、`spawn()` + `try_wait()`
-/// ポーリングで `GIT_TIMEOUT` を超えたら子プロセスを kill + reap する。
+/// ポーリングで `timeout` を超えたら子プロセスを kill + reap する。
 /// kill 後の `wait()` を省くとゾンビが親 PID に紐付き session 終了まで残るため必須。
-/// stderr は `Stdio::null()` でターミナルへの出力を抑制する。
-fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
-    let mut child = Command::new("git")
-        .args(args)
-        .stdout(Stdio::piped())
-        .stderr(Stdio::null())
-        .spawn()
-        .ok()?;
+///
+/// 引数 `cmd` は呼び出し側で `stdout(Stdio::piped())` / `stderr(Stdio::null())` 等の
+/// `Stdio` 設定を済ませた状態で渡す。テストでは `Command::new("sleep")` 等を渡して
+/// タイムアウト経路を検証する。
+fn run_command_with_timeout(mut cmd: Command, timeout: Duration) -> Option<Vec<u8>> {
+    let mut child = cmd.spawn().ok()?;
 
-    let deadline = Instant::now() + GIT_TIMEOUT;
+    let deadline = Instant::now() + timeout;
     loop {
         match child.try_wait() {
             Ok(Some(status)) => {
@@ -244,6 +242,14 @@ fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
     }
 }
 
+/// git コマンドをタイムアウト付きで実行し、成功した stdout を返す。
+/// stderr は `Stdio::null()` でターミナルへの出力を抑制する。
+fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::null());
+    run_command_with_timeout(cmd, GIT_TIMEOUT)
+}
+
 /// git -C <dir> でブランチと dirty 状態を取得（失敗・タイムアウト時は None）。
 ///
 /// Issue #22: サブプロセスを 3 本から 1 本に統合（fork/exec オーバーヘッド削減）。
@@ -251,6 +257,13 @@ fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
 /// `--no-optional-locks` で index lock 競合時に読み取り専用で処理し競合を回避。
 /// Issue #21: `run_git_with_timeout` で 500ms タイムアウトを強制し、
 /// NFS ハング時もシェルがフリーズしない。
+///
+/// 設計判断: `-uno` を採用する代わりに untracked のみ存在する状態では dirty
+/// マーカー (`*`) が出ない。これは Starship / Pure / Spaceship 等の主要プロンプト
+/// と同じ振る舞いで、プロンプト毎呼び出しの p99 レイテンシを優先する選択。
+/// untracked を別マーカーで出す案（Starship の `?` 等）も将来検討可能だが、
+/// 現状はミニマリズム維持を優先する。要件が変われば `-uno` を環境変数で
+/// 切り替え可能にする拡張余地を残す。
 fn git_info(cwd: &str) -> Option<GitInfo> {
     let stdout = run_git_with_timeout(&[
         "-C",
@@ -670,6 +683,48 @@ mod tests {
     fn test_parse_porcelain_v2_invalid_utf8() {
         let stdout = &[0xffu8, 0xfe, 0xfd][..];
         assert!(parse_porcelain_v2(stdout).is_none());
+    }
+
+    // ── run_command_with_timeout ──────────────────────────────────────────────
+    //
+    // Unix の `true` / `false` / `sleep` を使って成功・失敗・タイムアウト経路を検証する。
+    // Windows 環境では実行されないため `#[cfg(unix)]` でガード。
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_success() {
+        // `printf hello` は exit 0 で stdout に "hello" を出力
+        let mut cmd = Command::new("printf");
+        cmd.arg("hello").stdout(Stdio::piped()).stderr(Stdio::null());
+        let out = run_command_with_timeout(cmd, Duration::from_secs(2)).unwrap();
+        assert_eq!(out, b"hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_nonzero_exit() {
+        // `false` は exit 1 → None
+        let mut cmd = Command::new("false");
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+        assert!(run_command_with_timeout(cmd, Duration::from_secs(2)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_times_out_and_kills() {
+        // `sleep 10` を 50ms タイムアウトで起動: kill + reap が走り、
+        // 実時間 50ms 程度（10 秒待たない）で None が返ることを確認。
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10").stdout(Stdio::piped()).stderr(Stdio::null());
+        let start = Instant::now();
+        let result = run_command_with_timeout(cmd, Duration::from_millis(50));
+        let elapsed = start.elapsed();
+        assert!(result.is_none());
+        // kill が走らなければ 10 秒待つはずなので、1 秒以内なら kill 経路通過と判定
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "elapsed = {elapsed:?} (kill が走っていない可能性)"
+        );
     }
 }
 
