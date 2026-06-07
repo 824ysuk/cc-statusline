@@ -110,7 +110,14 @@ fn dir_name_impl(cwd: &str, levels: usize, home: Option<&str>) -> String {
 
 struct GitInfo {
     branch: String,
-    is_dirty: bool,
+    /// Some(true) = dirty, Some(false) = clean, None = status unknown (command failed)
+    is_dirty: Option<bool>,
+}
+
+/// `git status --porcelain` の実行結果から dirty 状態を導出する。
+/// コマンドが失敗した場合は None（不明）を返す。
+fn dirty_from_output(success: bool, stdout: &[u8]) -> Option<bool> {
+    if success { Some(!stdout.is_empty()) } else { None }
 }
 
 struct LocationInfo {
@@ -172,7 +179,7 @@ fn git_info(cwd: &str) -> Option<GitInfo> {
         .args(["-C", cwd, "status", "--porcelain"])
         .output()
         .ok()?;
-    let is_dirty = !dirty_out.stdout.is_empty();
+    let is_dirty = dirty_from_output(dirty_out.status.success(), &dirty_out.stdout);
 
     Some(GitInfo { branch, is_dirty })
 }
@@ -295,7 +302,11 @@ fn render_dir_line(stdin: &StdinData) -> Option<String> {
     let mut s = format!("{YELLOW}{}{RESET}", loc.display);
 
     if let Some(git) = git_info(&loc.git_root) {
-        let dirty = if git.is_dirty { "*" } else { "" };
+        let dirty = match git.is_dirty {
+            Some(true) => "*",
+            Some(false) => "",
+            None => "?",
+        };
         s.push_str(&format!(
             " {DIM}on{RESET} {CYAN_BRIGHT}{branch}{dirty}{RESET}",
             branch = git.branch,
@@ -514,6 +525,30 @@ mod tests {
     fn test_parse_effort_null() {
         let v = json!(null);
         assert_eq!(parse_effort(&v), None);
+    }
+
+    // ── dirty_from_output ─────────────────────────────────────────────────────
+
+    #[test]
+    fn test_dirty_from_output_success_with_output() {
+        assert_eq!(dirty_from_output(true, b" M src/main.rs\n"), Some(true));
+    }
+
+    #[test]
+    fn test_dirty_from_output_success_empty() {
+        assert_eq!(dirty_from_output(true, b""), Some(false));
+    }
+
+    #[test]
+    fn test_dirty_from_output_failure_empty_stdout() {
+        // git status --porcelain がエラー終了した場合: stdout が空でも None を返す
+        assert_eq!(dirty_from_output(false, b""), None);
+    }
+
+    #[test]
+    fn test_dirty_from_output_failure_nonempty_stdout() {
+        // 理論上まれだが: 非ゼロ exit でも stdout に残骸がある場合も None（エラー優先）
+        assert_eq!(dirty_from_output(false, b"?? foo\n"), None);
     }
 }
 
