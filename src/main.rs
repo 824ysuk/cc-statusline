@@ -581,8 +581,5 @@ fn main() {
     }
 
     // Line 2: [model | effort] │ Context bar │ Usage bar
-    let identity = render_identity_line(&stdin);
-    if !identity.is_empty() {
-        print!("{RESET}{identity}");
-    }
+    print!("{RESET}{}", render_identity_line(&stdin));
 }
