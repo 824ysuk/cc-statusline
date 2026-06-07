@@ -627,6 +627,180 @@ mod tests {
         assert_eq!(parse_effort(&v), None);
     }
 
+    #[test]
+    fn test_parse_effort_object_without_level_key() {
+        // Issue #38: "level" キーがない Object は None を返す
+        let v = json!({"mode": "high"});
+        assert_eq!(parse_effort(&v), None);
+    }
+
+    // ── resolve_location ──────────────────────────────────────────────────────
+
+    #[test]
+    fn test_resolve_location_normal() {
+        // Issue #19: 通常パス → display = 末尾ディレクトリ, git_root = cwd
+        let loc = resolve_location("/home/user/my-project");
+        assert_eq!(loc.display, "my-project");
+        assert_eq!(loc.git_root, "/home/user/my-project");
+    }
+
+    #[test]
+    fn test_resolve_location_worktree() {
+        // Issue #19: worktree パス → "repo > wt_name", git_root は worktree root
+        let loc = resolve_location("/home/user/repo/.claude/worktrees/feat-x");
+        assert_eq!(loc.display, "repo > feat-x");
+        assert_eq!(loc.git_root, "/home/user/repo/.claude/worktrees/feat-x");
+    }
+
+    #[test]
+    fn test_resolve_location_worktree_with_subdir() {
+        // worktree 内のサブディレクトリでも repo root と wt 名で表示する
+        let loc = resolve_location("/home/user/repo/.claude/worktrees/feat-x/src");
+        assert_eq!(loc.display, "repo > feat-x");
+        assert_eq!(loc.git_root, "/home/user/repo/.claude/worktrees/feat-x");
+    }
+
+    #[test]
+    fn test_resolve_location_worktree_empty_name() {
+        // wt_name が空 (`.claude/worktrees/` で終わる) → 通常パスにフォールバック
+        let loc = resolve_location("/home/user/repo/.claude/worktrees/");
+        assert!(!loc.display.contains('>'));
+    }
+
+    // ── render_rate_limit_part ────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_rate_limit_part_none_rl() {
+        // Issue #30: rl が None → None
+        assert!(render_rate_limit_part("5h", None, BLUE_BRIGHT).is_none());
+    }
+
+    #[test]
+    fn test_render_rate_limit_part_none_percentage() {
+        // Issue #30: used_percentage が None → None
+        let rl = RateLimit {
+            used_percentage: None,
+            resets_at: Some(1_000_000.0),
+        };
+        assert!(render_rate_limit_part("5h", Some(&rl), BLUE_BRIGHT).is_none());
+    }
+
+    #[test]
+    fn test_render_rate_limit_part_with_reset() {
+        // Issue #30: resets_at あり → "(resets in ...)" を含む
+        let rl = RateLimit {
+            used_percentage: Some(42.0),
+            resets_at: Some(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap()
+                    .as_secs_f64()
+                    + 3600.0,
+            ),
+        };
+        let out = render_rate_limit_part("5h", Some(&rl), BLUE_BRIGHT).unwrap();
+        let plain = strip_ansi(&out);
+        assert!(plain.starts_with("5h "));
+        assert!(plain.contains("42%"));
+        assert!(plain.contains("(resets in "));
+    }
+
+    #[test]
+    fn test_render_rate_limit_part_without_reset() {
+        // Issue #30: resets_at なし → reset サフィックスなし
+        let rl = RateLimit {
+            used_percentage: Some(10.0),
+            resets_at: None,
+        };
+        let out = render_rate_limit_part("7d", Some(&rl), BLUE_BRIGHT).unwrap();
+        let plain = strip_ansi(&out);
+        assert!(plain.contains("10%"));
+        assert!(!plain.contains("resets in"));
+    }
+
+    // ── render_identity_line ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_render_identity_line_model_only() {
+        // Issue #31: モデルのみ。context_window / rate_limits / effort なし
+        let stdin = StdinData {
+            cwd: None,
+            workspace: None,
+            model: Some(Model {
+                display_name: Some("Sonnet 4.6".to_string()),
+                id: None,
+            }),
+            context_window: None,
+            rate_limits: None,
+            effort: None,
+        };
+        let plain = strip_ansi(&render_identity_line(&stdin));
+        assert_eq!(plain, "[Sonnet 4.6]");
+    }
+
+    #[test]
+    fn test_render_identity_line_unknown_model() {
+        // model が None のとき "Unknown" badge を出す
+        let stdin = StdinData::default();
+        let plain = strip_ansi(&render_identity_line(&stdin));
+        assert_eq!(plain, "[Unknown]");
+    }
+
+    #[test]
+    fn test_render_identity_line_with_effort_and_context() {
+        // effort + context bar を含むときセパレータでつながる
+        let stdin = StdinData {
+            cwd: None,
+            workspace: None,
+            model: Some(Model {
+                display_name: Some("Opus 4.7".to_string()),
+                id: None,
+            }),
+            context_window: Some(ContextWindow {
+                context_window_size: None,
+                used_percentage: Some(26.0),
+                current_usage: None,
+            }),
+            rate_limits: None,
+            effort: Some(json!("high")),
+        };
+        let plain = strip_ansi(&render_identity_line(&stdin));
+        assert!(plain.starts_with("[Opus 4.7 | high]"));
+        assert!(plain.contains(" │ "));
+        assert!(plain.contains("Context "));
+        assert!(plain.contains("26%"));
+    }
+
+    #[test]
+    fn test_render_identity_line_with_rate_limits() {
+        // rate_limits があれば 5h / 7d 部分が並ぶ
+        let stdin = StdinData {
+            cwd: None,
+            workspace: None,
+            model: Some(Model {
+                display_name: Some("Sonnet 4.6".to_string()),
+                id: None,
+            }),
+            context_window: None,
+            rate_limits: Some(RateLimits {
+                five_hour: Some(RateLimit {
+                    used_percentage: Some(15.0),
+                    resets_at: None,
+                }),
+                seven_day: Some(RateLimit {
+                    used_percentage: Some(33.0),
+                    resets_at: None,
+                }),
+            }),
+            effort: None,
+        };
+        let plain = strip_ansi(&render_identity_line(&stdin));
+        assert!(plain.contains("5h "));
+        assert!(plain.contains("15%"));
+        assert!(plain.contains("7d "));
+        assert!(plain.contains("33%"));
+    }
+
     // ── parse_porcelain_v2 ────────────────────────────────────────────────────
 
     #[test]
