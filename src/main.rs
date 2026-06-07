@@ -1,6 +1,7 @@
 use std::io::{self, Read};
-use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -193,28 +194,74 @@ fn resolve_location(cwd: &str) -> LocationInfo {
     }
 }
 
-/// git -C <dir> でブランチと dirty 状態を取得（失敗時は None）。
+/// git サブプロセスに許容する最大待機時間。
+/// NFS/SMB マウントや index lock 競合で git がハングした場合に、
+/// プロンプト全体がフリーズするのを防ぐため強制 kill する。
+/// Starship (https://github.com/starship/starship) と同じ 500ms を採用。
+const GIT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// try_wait ポーリング間隔。短命プロンプトでは 5ms 単位で十分。
+const GIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// git コマンドをタイムアウト付きで実行し、成功した stdout を返す。
+///
+/// Issue #21: `Command::output()` は無期限ブロックするため、`spawn()` + `try_wait()`
+/// ポーリングで `GIT_TIMEOUT` を超えたら子プロセスを kill + reap する。
+/// kill 後の `wait()` を省くとゾンビが親 PID に紐付き session 終了まで残るため必須。
+/// stderr は `Stdio::null()` でターミナルへの出力を抑制する。
+fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
+    let mut child = Command::new("git")
+        .args(args)
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .ok()?;
+
+    let deadline = Instant::now() + GIT_TIMEOUT;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut buf = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    out.read_to_end(&mut buf).ok()?;
+                }
+                return if status.success() { Some(buf) } else { None };
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                thread::sleep(GIT_POLL_INTERVAL);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// git -C <dir> でブランチと dirty 状態を取得（失敗・タイムアウト時は None）。
 ///
 /// Issue #22: サブプロセスを 3 本から 1 本に統合（fork/exec オーバーヘッド削減）。
 /// `-uno` で untracked スキャンを省略し `node_modules` 等を持つ repo でも高速。
 /// `--no-optional-locks` で index lock 競合時に読み取り専用で処理し競合を回避。
+/// Issue #21: `run_git_with_timeout` で 500ms タイムアウトを強制し、
+/// NFS ハング時もシェルがフリーズしない。
 fn git_info(cwd: &str) -> Option<GitInfo> {
-    let out = Command::new("git")
-        .args([
-            "-C",
-            cwd,
-            "--no-optional-locks",
-            "status",
-            "--branch",
-            "--porcelain=v2",
-            "-uno",
-        ])
-        .output()
-        .ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    parse_porcelain_v2(&out.stdout)
+    let stdout = run_git_with_timeout(&[
+        "-C",
+        cwd,
+        "--no-optional-locks",
+        "status",
+        "--branch",
+        "--porcelain=v2",
+        "-uno",
+    ])?;
+    parse_porcelain_v2(&stdout)
 }
 
 /// effort フィールドを文字列に変換（string | {level} の両形式対応）
