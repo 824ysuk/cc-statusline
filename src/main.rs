@@ -15,7 +15,6 @@ const CYAN_BRIGHT: &str = "\x1b[96m";
 const GREEN: &str = "\x1b[32m";
 const ORANGE: &str = "\x1b[38;5;208m";
 const RED: &str = "\x1b[31m";
-const BLUE_BRIGHT: &str = "\x1b[94m";
 
 // ── stdin JSON schema ─────────────────────────────────────────────────────────
 #[derive(Deserialize, Default)]
@@ -349,10 +348,11 @@ fn render_bar(pct: u32, width: usize, color: &str) -> String {
     s
 }
 
-fn render_rate_limit_part(label: &str, rl: Option<&RateLimit>, color: &str) -> Option<String> {
+fn render_rate_limit_part(label: &str, rl: Option<&RateLimit>) -> Option<String> {
     let rl = rl?;
     let pct_f = rl.used_percentage?;
     let pct = pct_f.clamp(0.0, 100.0).round() as u32;
+    let color = context_color(pct);
     let bar = render_bar(pct, 10, color);
     let reset = rl
         .resets_at
@@ -442,16 +442,8 @@ fn render_identity_line(stdin: &StdinData) -> String {
     }
 
     if let Some(rl) = &stdin.rate_limits {
-        parts.extend(render_rate_limit_part(
-            "5h",
-            rl.five_hour.as_ref(),
-            BLUE_BRIGHT,
-        ));
-        parts.extend(render_rate_limit_part(
-            "7d",
-            rl.seven_day.as_ref(),
-            BLUE_BRIGHT,
-        ));
+        parts.extend(render_rate_limit_part("5h", rl.five_hour.as_ref()));
+        parts.extend(render_rate_limit_part("7d", rl.seven_day.as_ref()));
     }
 
     let sep = format!(" {DIM}│{RESET} ");
@@ -724,7 +716,7 @@ mod tests {
     #[test]
     fn test_render_rate_limit_part_none_rl() {
         // Issue #30: rl が None → None
-        assert!(render_rate_limit_part("5h", None, BLUE_BRIGHT).is_none());
+        assert!(render_rate_limit_part("5h", None).is_none());
     }
 
     #[test]
@@ -734,7 +726,7 @@ mod tests {
             used_percentage: None,
             resets_at: Some(1_000_000.0),
         };
-        assert!(render_rate_limit_part("5h", Some(&rl), BLUE_BRIGHT).is_none());
+        assert!(render_rate_limit_part("5h", Some(&rl)).is_none());
     }
 
     #[test]
@@ -750,7 +742,7 @@ mod tests {
                     + 3600.0,
             ),
         };
-        let out = render_rate_limit_part("5h", Some(&rl), BLUE_BRIGHT).unwrap();
+        let out = render_rate_limit_part("5h", Some(&rl)).unwrap();
         let plain = strip_ansi(&out);
         assert!(plain.starts_with("5h "));
         assert!(plain.contains("42%"));
@@ -764,10 +756,32 @@ mod tests {
             used_percentage: Some(10.0),
             resets_at: None,
         };
-        let out = render_rate_limit_part("7d", Some(&rl), BLUE_BRIGHT).unwrap();
+        let out = render_rate_limit_part("7d", Some(&rl)).unwrap();
         let plain = strip_ansi(&out);
         assert!(plain.contains("10%"));
         assert!(!plain.contains("resets in"));
+    }
+
+    #[test]
+    fn test_render_rate_limit_part_high_usage_uses_red() {
+        // 90% → context_color(90) = RED (#42)
+        let rl = RateLimit {
+            used_percentage: Some(90.0),
+            resets_at: None,
+        };
+        let out = render_rate_limit_part("5h", Some(&rl)).unwrap();
+        assert!(out.contains(RED));
+    }
+
+    #[test]
+    fn test_render_rate_limit_part_low_usage_uses_green() {
+        // 20% → context_color(20) = GREEN (#42)
+        let rl = RateLimit {
+            used_percentage: Some(20.0),
+            resets_at: None,
+        };
+        let out = render_rate_limit_part("5h", Some(&rl)).unwrap();
+        assert!(out.contains(GREEN));
     }
 
     // ── render_identity_line ──────────────────────────────────────────────────
