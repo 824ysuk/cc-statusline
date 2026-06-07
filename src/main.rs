@@ -1,6 +1,7 @@
 use std::io::{self, Read};
-use std::process::Command;
-use std::time::{Duration, SystemTime, UNIX_EPOCH};
+use std::process::{Command, Stdio};
+use std::thread;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 use serde::Deserialize;
 use serde_json::Value;
 
@@ -120,10 +121,47 @@ struct GitInfo {
     is_dirty: Option<bool>,
 }
 
-/// `git status --porcelain` の実行結果から dirty 状態を導出する。
-/// コマンドが失敗した場合は None（不明）を返す。
-fn dirty_from_output(success: bool, stdout: &[u8]) -> Option<bool> {
-    if success { Some(!stdout.is_empty()) } else { None }
+/// `git status --branch --porcelain=v2 -uno` の stdout からブランチ名と dirty 状態を解析する。
+///
+/// porcelain=v2 形式:
+///   # branch.oid <sha>
+///   # branch.head <name>          ("(detached)" のとき detached HEAD)
+///   # branch.upstream <name>      (省略可)
+///   # branch.ab +N -M             (省略可)
+///   1 <xy> ...                    ← 変更エントリ（# 以外の非空行）
+///
+/// -uno により untracked 行（'?'）は出ない。`# branch.head` が無ければ None。
+fn parse_porcelain_v2(stdout: &[u8]) -> Option<GitInfo> {
+    let text = std::str::from_utf8(stdout).ok()?;
+
+    let mut branch_head: Option<&str> = None;
+    let mut branch_oid: Option<&str> = None;
+    let mut is_dirty = false;
+
+    for line in text.lines() {
+        if let Some(rest) = line.strip_prefix("# branch.head ") {
+            branch_head = Some(rest);
+        } else if let Some(rest) = line.strip_prefix("# branch.oid ") {
+            branch_oid = Some(rest);
+        } else if !line.starts_with('#') && !line.is_empty() {
+            is_dirty = true;
+        }
+    }
+
+    let head = branch_head?;
+    let branch = if head == "(detached)" {
+        // detached HEAD: SHA を 7 文字に切り詰めて表示（git rev-parse --short と同等）
+        let oid = branch_oid?;
+        let short_len = oid.len().min(7);
+        format!("*({})", &oid[..short_len])
+    } else {
+        head.to_string()
+    };
+
+    Some(GitInfo {
+        branch,
+        is_dirty: Some(is_dirty),
+    })
 }
 
 struct LocationInfo {
@@ -156,38 +194,87 @@ fn resolve_location(cwd: &str) -> LocationInfo {
     }
 }
 
-/// git -C <dir> でブランチと dirty 状態を取得（失敗時は None）
+/// git サブプロセスに許容する最大待機時間。
+/// NFS/SMB マウントや index lock 競合で git がハングした場合に、
+/// プロンプト全体がフリーズするのを防ぐため強制 kill する。
+/// Starship (https://github.com/starship/starship) と同じ 500ms を採用。
+const GIT_TIMEOUT: Duration = Duration::from_millis(500);
+
+/// try_wait ポーリング間隔。短命プロンプトでは 5ms 単位で十分。
+const GIT_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+/// 任意の `Command` をタイムアウト付きで実行し、成功した stdout を返す。
+///
+/// Issue #21: `Command::output()` は無期限ブロックするため、`spawn()` + `try_wait()`
+/// ポーリングで `timeout` を超えたら子プロセスを kill + reap する。
+/// kill 後の `wait()` を省くとゾンビが親 PID に紐付き session 終了まで残るため必須。
+///
+/// 引数 `cmd` は呼び出し側で `stdout(Stdio::piped())` / `stderr(Stdio::null())` 等の
+/// `Stdio` 設定を済ませた状態で渡す。テストでは `Command::new("sleep")` 等を渡して
+/// タイムアウト経路を検証する。
+fn run_command_with_timeout(mut cmd: Command, timeout: Duration) -> Option<Vec<u8>> {
+    let mut child = cmd.spawn().ok()?;
+
+    let deadline = Instant::now() + timeout;
+    loop {
+        match child.try_wait() {
+            Ok(Some(status)) => {
+                let mut buf = Vec::new();
+                if let Some(mut out) = child.stdout.take() {
+                    out.read_to_end(&mut buf).ok()?;
+                }
+                return if status.success() { Some(buf) } else { None };
+            }
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    return None;
+                }
+                thread::sleep(GIT_POLL_INTERVAL);
+            }
+            Err(_) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return None;
+            }
+        }
+    }
+}
+
+/// git コマンドをタイムアウト付きで実行し、成功した stdout を返す。
+/// stderr は `Stdio::null()` でターミナルへの出力を抑制する。
+fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
+    let mut cmd = Command::new("git");
+    cmd.args(args).stdout(Stdio::piped()).stderr(Stdio::null());
+    run_command_with_timeout(cmd, GIT_TIMEOUT)
+}
+
+/// git -C <dir> でブランチと dirty 状態を取得（失敗・タイムアウト時は None）。
+///
+/// Issue #22: サブプロセスを 3 本から 1 本に統合（fork/exec オーバーヘッド削減）。
+/// `-uno` で untracked スキャンを省略し `node_modules` 等を持つ repo でも高速。
+/// `--no-optional-locks` で index lock 競合時に読み取り専用で処理し競合を回避。
+/// Issue #21: `run_git_with_timeout` で 500ms タイムアウトを強制し、
+/// NFS ハング時もシェルがフリーズしない。
+///
+/// 設計判断: `-uno` を採用する代わりに untracked のみ存在する状態では dirty
+/// マーカー (`*`) が出ない。これは Starship / Pure / Spaceship 等の主要プロンプト
+/// と同じ振る舞いで、プロンプト毎呼び出しの p99 レイテンシを優先する選択。
+/// untracked を別マーカーで出す案（Starship の `?` 等）も将来検討可能だが、
+/// 現状はミニマリズム維持を優先する。要件が変われば `-uno` を環境変数で
+/// 切り替え可能にする拡張余地を残す。
 fn git_info(cwd: &str) -> Option<GitInfo> {
-    let branch_out = Command::new("git")
-        .args(["-C", cwd, "symbolic-ref", "--short", "HEAD"])
-        .output()
-        .ok()?;
-
-    let branch = if branch_out.status.success() {
-        let b = String::from_utf8_lossy(&branch_out.stdout).trim().to_string();
-        if b.is_empty() {
-            return None;
-        }
-        b
-    } else {
-        // detached HEAD: fall back to short SHA
-        let rev_out = Command::new("git")
-            .args(["-C", cwd, "rev-parse", "--short", "HEAD"])
-            .output()
-            .ok()?;
-        if !rev_out.status.success() {
-            return None;
-        }
-        format!("*({})", String::from_utf8_lossy(&rev_out.stdout).trim())
-    };
-
-    let dirty_out = Command::new("git")
-        .args(["-C", cwd, "status", "--porcelain"])
-        .output()
-        .ok()?;
-    let is_dirty = dirty_from_output(dirty_out.status.success(), &dirty_out.stdout);
-
-    Some(GitInfo { branch, is_dirty })
+    let stdout = run_git_with_timeout(&[
+        "-C",
+        cwd,
+        "--no-optional-locks",
+        "status",
+        "--branch",
+        "--porcelain=v2",
+        "-uno",
+    ])?;
+    parse_porcelain_v2(&stdout)
 }
 
 /// effort フィールドを文字列に変換（string | {level} の両形式対応）
@@ -540,28 +627,104 @@ mod tests {
         assert_eq!(parse_effort(&v), None);
     }
 
-    // ── dirty_from_output ─────────────────────────────────────────────────────
+    // ── parse_porcelain_v2 ────────────────────────────────────────────────────
 
     #[test]
-    fn test_dirty_from_output_success_with_output() {
-        assert_eq!(dirty_from_output(true, b" M src/main.rs\n"), Some(true));
+    fn test_parse_porcelain_v2_clean_branch() {
+        // ブランチ上で変更なし: branch のみ、is_dirty=false
+        let stdout = b"# branch.oid 0123456789abcdef0123456789abcdef01234567\n\
+                       # branch.head main\n\
+                       # branch.upstream origin/main\n\
+                       # branch.ab +0 -0\n";
+        let gi = parse_porcelain_v2(stdout).unwrap();
+        assert_eq!(gi.branch, "main");
+        assert_eq!(gi.is_dirty, Some(false));
     }
 
     #[test]
-    fn test_dirty_from_output_success_empty() {
-        assert_eq!(dirty_from_output(true, b""), Some(false));
+    fn test_parse_porcelain_v2_dirty_branch() {
+        // 変更エントリ '1 .M ...' があれば is_dirty=true
+        let stdout = b"# branch.oid 0123456789abcdef0123456789abcdef01234567\n\
+                       # branch.head feature/x\n\
+                       1 .M N... 100644 100644 100644 abc abc src/main.rs\n";
+        let gi = parse_porcelain_v2(stdout).unwrap();
+        assert_eq!(gi.branch, "feature/x");
+        assert_eq!(gi.is_dirty, Some(true));
     }
 
     #[test]
-    fn test_dirty_from_output_failure_empty_stdout() {
-        // git status --porcelain がエラー終了した場合: stdout が空でも None を返す
-        assert_eq!(dirty_from_output(false, b""), None);
+    fn test_parse_porcelain_v2_detached_head() {
+        // detached HEAD: SHA を 7 文字に切って *() で囲む
+        let stdout = b"# branch.oid deadbeef1234567890abcdef0123456789abcdef\n\
+                       # branch.head (detached)\n";
+        let gi = parse_porcelain_v2(stdout).unwrap();
+        assert_eq!(gi.branch, "*(deadbee)");
+        assert_eq!(gi.is_dirty, Some(false));
     }
 
     #[test]
-    fn test_dirty_from_output_failure_nonempty_stdout() {
-        // 理論上まれだが: 非ゼロ exit でも stdout に残骸がある場合も None（エラー優先）
-        assert_eq!(dirty_from_output(false, b"?? foo\n"), None);
+    fn test_parse_porcelain_v2_detached_head_dirty() {
+        let stdout = b"# branch.oid deadbeef1234567890abcdef0123456789abcdef\n\
+                       # branch.head (detached)\n\
+                       2 R. N... 100644 100644 100644 abc def R100 new.rs\told.rs\n";
+        let gi = parse_porcelain_v2(stdout).unwrap();
+        assert_eq!(gi.branch, "*(deadbee)");
+        assert_eq!(gi.is_dirty, Some(true));
+    }
+
+    #[test]
+    fn test_parse_porcelain_v2_missing_branch_head() {
+        // # branch.head が無ければ None（git の出力異常時）
+        let stdout = b"# branch.oid 0123456789abcdef0123456789abcdef01234567\n";
+        assert!(parse_porcelain_v2(stdout).is_none());
+    }
+
+    #[test]
+    fn test_parse_porcelain_v2_invalid_utf8() {
+        let stdout = &[0xffu8, 0xfe, 0xfd][..];
+        assert!(parse_porcelain_v2(stdout).is_none());
+    }
+
+    // ── run_command_with_timeout ──────────────────────────────────────────────
+    //
+    // Unix の `true` / `false` / `sleep` を使って成功・失敗・タイムアウト経路を検証する。
+    // Windows 環境では実行されないため `#[cfg(unix)]` でガード。
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_success() {
+        // `printf hello` は exit 0 で stdout に "hello" を出力
+        let mut cmd = Command::new("printf");
+        cmd.arg("hello").stdout(Stdio::piped()).stderr(Stdio::null());
+        let out = run_command_with_timeout(cmd, Duration::from_secs(2)).unwrap();
+        assert_eq!(out, b"hello");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_nonzero_exit() {
+        // `false` は exit 1 → None
+        let mut cmd = Command::new("false");
+        cmd.stdout(Stdio::piped()).stderr(Stdio::null());
+        assert!(run_command_with_timeout(cmd, Duration::from_secs(2)).is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn test_run_command_with_timeout_times_out_and_kills() {
+        // `sleep 10` を 50ms タイムアウトで起動: kill + reap が走り、
+        // 実時間 50ms 程度（10 秒待たない）で None が返ることを確認。
+        let mut cmd = Command::new("sleep");
+        cmd.arg("10").stdout(Stdio::piped()).stderr(Stdio::null());
+        let start = Instant::now();
+        let result = run_command_with_timeout(cmd, Duration::from_millis(50));
+        let elapsed = start.elapsed();
+        assert!(result.is_none());
+        // kill が走らなければ 10 秒待つはずなので、1 秒以内なら kill 経路通過と判定
+        assert!(
+            elapsed < Duration::from_secs(1),
+            "elapsed = {elapsed:?} (kill が走っていない可能性)"
+        );
     }
 }
 
