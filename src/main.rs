@@ -355,6 +355,7 @@ fn render_bar(pct: u32, width: usize, color: &str) -> String {
     s
 }
 
+// context バーと閾値を共有し、高使用率時に同じ警告色体系で通知する設計。
 fn render_rate_limit_part(label: &str, rl: Option<&RateLimit>) -> Option<String> {
     let rl = rl?;
     let pct_f = rl.used_percentage?;
