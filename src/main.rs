@@ -90,6 +90,12 @@ fn dir_name_impl(cwd: &str, levels: usize, home: Option<&str>) -> String {
         cwd.to_string()
     };
 
+    // cwd が HOME と完全一致するとき expanded == "~" になる。
+    // このまま parts を作ると ["~"] となり "~/~" が返るため早期リターン。
+    if expanded == "~" {
+        return "~".to_string();
+    }
+
     let parts: Vec<&str> = expanded.split('/').filter(|s| !s.is_empty()).collect();
     if parts.is_empty() {
         return "/".to_string();
@@ -382,6 +388,13 @@ mod tests {
     fn test_dir_name_root() {
         let result = dir_name_impl("/", 1, None);
         assert_eq!(result, "/");
+    }
+
+    #[test]
+    fn test_dir_name_cwd_equals_home() {
+        // cwd が HOME と完全一致するとき "~" を返す（"~/~" にならない）
+        let result = dir_name_impl("/Users/foo", 1, Some("/Users/foo"));
+        assert_eq!(result, "~");
     }
 
     // ── context_pct ───────────────────────────────────────────────────────────
