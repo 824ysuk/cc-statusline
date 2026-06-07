@@ -454,6 +454,27 @@ fn render_identity_line(stdin: &StdinData) -> String {
     parts.join(&sep)
 }
 
+// ── main ──────────────────────────────────────────────────────────────────────
+
+fn main() {
+    let raw = read_stdin();
+    let stdin: StdinData = serde_json::from_str(&raw).unwrap_or_else(|e| {
+        eprintln!("statusline-rs: JSON parse error: {e}");
+        eprintln!("input: {raw}");
+        std::process::exit(1);
+    });
+
+    // Line 1: directory + git branch (改行で Line 2 と分離)
+    if let Some(line) = render_dir_line(&stdin) {
+        println!("{RESET}{line}");
+    }
+
+    // Line 2: [model | effort] │ Context bar │ Usage bar
+    // 末尾改行を出さない — statusline は親プロセス (Claude Code) が改行を制御する。
+    // `println!` で改行を足すと表示行が 1 行ずれる。
+    print!("{RESET}{}", render_identity_line(&stdin));
+}
+
 // ── tests ─────────────────────────────────────────────────────────────────────
 
 #[cfg(test)]
@@ -923,25 +944,4 @@ mod tests {
             "elapsed = {elapsed:?} (kill が走っていない可能性)"
         );
     }
-}
-
-// ── main ──────────────────────────────────────────────────────────────────────
-
-fn main() {
-    let raw = read_stdin();
-    let stdin: StdinData = serde_json::from_str(&raw).unwrap_or_else(|e| {
-        eprintln!("statusline-rs: JSON parse error: {e}");
-        eprintln!("input: {raw}");
-        std::process::exit(1);
-    });
-
-    // Line 1: directory + git branch (改行で Line 2 と分離)
-    if let Some(line) = render_dir_line(&stdin) {
-        println!("{RESET}{line}");
-    }
-
-    // Line 2: [model | effort] │ Context bar │ Usage bar
-    // 末尾改行を出さない — statusline は親プロセス (Claude Code) が改行を制御する。
-    // `println!` で改行を足すと表示行が 1 行ずれる。
-    print!("{RESET}{}", render_identity_line(&stdin));
 }
