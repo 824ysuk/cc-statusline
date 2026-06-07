@@ -262,7 +262,14 @@ fn run_git_with_timeout(args: &[&str]) -> Option<Vec<u8>> {
 /// 現状はミニマリズム維持を優先する。要件が変われば `-uno` を環境変数で
 /// 切り替え可能にする拡張余地を残す。
 fn git_info(cwd: &str) -> Option<GitInfo> {
-    let stdout = run_git_with_timeout(&[
+    git_info_with_runner(cwd, run_git_with_timeout)
+}
+
+fn git_info_with_runner<F>(cwd: &str, run: F) -> Option<GitInfo>
+where
+    F: Fn(&[&str]) -> Option<Vec<u8>>,
+{
+    let stdout = run(&[
         "-C",
         cwd,
         "--no-optional-locks",
@@ -985,5 +992,40 @@ mod tests {
             elapsed < Duration::from_secs(1),
             "elapsed = {elapsed:?} (kill が走っていない可能性)"
         );
+    }
+
+    // ── git_info_with_runner ──────────────────────────────────────────────────
+
+    #[test]
+    fn test_git_info_with_runner_success() {
+        // fake runner が正常な porcelain v2 を返す → branch / dirty が取れる (#29)
+        let stdout = b"# branch.oid 0123456789abcdef0123456789abcdef01234567\n\
+                       # branch.head main\n\
+                       # branch.ab +0 -0\n";
+        let gi = git_info_with_runner("/any/path", |_args| Some(stdout.to_vec())).unwrap();
+        assert_eq!(gi.branch, "main");
+        assert_eq!(gi.is_dirty, Some(false));
+    }
+
+    #[test]
+    fn test_git_info_with_runner_dirty() {
+        let stdout = b"# branch.oid 0123456789abcdef0123456789abcdef01234567\n\
+                       # branch.head feature\n\
+                       1 .M N... 100644 100644 100644 abc abc src/lib.rs\n";
+        let gi = git_info_with_runner("/any/path", |_args| Some(stdout.to_vec())).unwrap();
+        assert_eq!(gi.branch, "feature");
+        assert_eq!(gi.is_dirty, Some(true));
+    }
+
+    #[test]
+    fn test_git_info_with_runner_none_on_failure() {
+        // runner が None を返す（git 失敗 / タイムアウト等）→ None (#29)
+        assert!(git_info_with_runner("/any/path", |_args| None).is_none());
+    }
+
+    #[test]
+    fn test_git_info_with_runner_invalid_output() {
+        // runner が不正 UTF-8 を返す → parse_porcelain_v2 が None → None (#29)
+        assert!(git_info_with_runner("/any/path", |_args| Some(vec![0xff, 0xfe])).is_none());
     }
 }
