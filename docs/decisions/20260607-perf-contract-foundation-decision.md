@@ -103,5 +103,11 @@ PR-A をマージしてから PR-B 以降に進む。Issue #21/#22 の元 report
 
 ## Open Questions
 
-- bench fixture（巨大 repo / NFS 環境）をどう用意するか — 初期は local SSD のみで、NFS / 巨大 repo は user 報告ベースで対応する案で start するか
-- latency budget の初期値（p50 < 10ms 等）が現実的か — PR-B の bench 実装後に実測で校正する
+- ~~bench fixture（巨大 repo / NFS 環境）をどう用意するか~~ — **巨大 repo は PR-B で解決**: `tempfile` + `git init` + 5000 個の untracked file で `node_modules` 相当の現場を tempdir に再現（[`benches/statusline_full.rs`](../../benches/statusline_full.rs) の `setup_huge_repo`）。NFS / SMB 等の network FS fixture は CI/dev 環境で安定再現する手段がなく未解決のまま運用フェーズに残す（後述「実装後の気づき」参照）
+- ~~latency budget の初期値（p50 < 10ms 等）が現実的か~~ — **PR-B 時点で 1 machine の dev 環境のみ実測**: minimal/full/huge_repo すべて ~14.3-14.7ms (local SSD, Mac dev machine)。**複数 machine / 複数 OS での校正は未実施**。budget は仮置きを継続し、reporter 環境での実測を待って校正する
+
+## 実装後の気づき (PR-B 完了時点)
+
+- huge_repo fixture (5000 untracked file) でも E2E 14.3ms に収まったことで、現状実装の `--porcelain=v2 -uno` の効果が **bench で実証可能** になった。今後 `-uno` が外される regression は本 bench で検出可能
+- network FS (NFS / SMB) fixture は本 PR スコープ外。reporter 環境問い合わせ ([Issue #21](https://github.com/824ysuk/cc-statusline/issues/21) / [#22](https://github.com/824ysuk/cc-statusline/issues/22)) で実環境数値を取得する運用に切り替える
+- budget 校正は 1 machine の datapoint では不可能。CI matrix (Linux/macOS) + reporter 数値を集めて初めて意味を持つ。PR-D (CI bench) で部分的にカバー予定
