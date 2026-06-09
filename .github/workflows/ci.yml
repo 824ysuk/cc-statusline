@@ -12,6 +12,18 @@ jobs:
     steps:
       - uses: actions/checkout@v6
 
+      - name: Verify README statusLine format
+        run: |
+          json_blocks=$(awk '/^```json$/,/^```$/' README.md)
+          if echo "$json_blocks" | grep -q '"hooks"' && \
+             echo "$json_blocks" | grep -A5 '"hooks"' | grep -q '"StatusLine"'; then
+            echo "ERROR: README の設定例に誤った hooks.StatusLine 形式が含まれています"
+            exit 1
+          fi
+          echo "$json_blocks" | grep -q '"statusLine"' || \
+            { echo "ERROR: README の設定例に statusLine キーがありません"; exit 1; }
+          echo "OK: README の statusLine 設定例は正しい形式です"
+
       - name: Install Rust stable
         uses: dtolnay/rust-toolchain@stable
         with:
