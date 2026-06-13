@@ -81,10 +81,17 @@ Claude Code の `statusLine` トップレベルキーとして登録します。
 
 ### 開発時のバイナリ切り替え
 
-`cargo install` せずに手動ビルド（`cargo build --release`）のバイナリを使いたい場合は `STATUSLINE_RS_BIN` 環境変数で上書きできます:
+手動ビルド（`cargo build --release`）したバイナリを使うには、PATH 上のバイナリを置き換えます:
 
 ```zsh
-export STATUSLINE_RS_BIN="$HOME/Projects/cc-statusline/target/release/statusline-rs"
+# 再インストール（~/.cargo/bin/statusline-rs を上書き）
+cargo install --path .
+```
+
+または、ビルド済みバイナリを `~/.cargo/bin` へシムリンクします:
+
+```zsh
+ln -sf "$HOME/Projects/cc-statusline/target/release/statusline-rs" ~/.cargo/bin/statusline-rs
 ```
 
 ## stdin JSON スキーマ
